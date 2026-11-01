@@ -99,4 +99,4 @@ Qualquer exceção levantada por `resolve_dispute` é capturada e convertida em 
 
 ## Licença
 
-Defina a licença do projeto aqui.
+MIT License.
