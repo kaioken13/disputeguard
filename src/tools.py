@@ -4,6 +4,13 @@ import chromadb
 from chromadb.utils import embedding_functions
 
 
+chroma_client = chromadb.Client()
+
+policy_collection = chroma_client.get_or_create_collection(
+    name="policies",
+    embedding_function=embedding_functions.DefaultEmbeddingFunction(),  # type: ignore[arg-type]
+)
+
 # 1. Base Mock de Pedidos
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 MOCK_ORDERS = {
@@ -46,25 +53,20 @@ def get_order_details(order_id: str) -> dict:
 # 2. Inicialização do Vector Store ChromaDB com a Política
 chroma_client = chromadb.Client()
 emb_fn = embedding_functions.DefaultEmbeddingFunction()
+# Na inicialização da collection (linha 50):
+# Use cast(Any, ...) ou type: ignore[arg-type] para neutralizar o stub imperfeito do ChromaDB:
 policy_collection = chroma_client.get_or_create_collection(
-    name="delivery_policies", embedding_function=emb_fn
+    name="policies",
+    policy_collection = chroma_client.get_or_create_collection(name="policies"),
 )
 
-
-def setup_policy_index():
-    policy_path = DATA_DIR / "delivery_policy.md"
-    if not policy_path.exists():
-        return
-    content = policy_path.read_text(encoding="utf-8")
-    sections = [s.strip() for s in content.split("\n\n") if s.strip()]
-    ids = [f"policy_rule_{i}" for i in range(len(sections))]
-    policy_collection.upsert(documents=sections, ids=ids)
-
-
-setup_policy_index()
-
-
+# Na função search_policy (linha 70):
+# Valide se documents existe e não é None antes de indexar:
 def search_policy(query: str, n_results: int = 2) -> list[str]:
     """Recupera as cláusulas de reembolso mais relevantes baseadas no relato da disputa."""
     results = policy_collection.query(query_texts=[query], n_results=n_results)
-    return results["documents"][0] if results and "documents" in results else []
+
+    docs = results.get("documents")
+    if docs and len(docs) > 0 and docs[0] is not None:
+        return docs[0]
+    return []

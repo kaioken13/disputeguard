@@ -13,7 +13,8 @@ app = FastAPI(
 @app.post("/disputes/resolve", response_model=DisputeResolution)
 async def handle_dispute(dispute: CustomerDisputeInput) -> DisputeResolution:
     try:
-        decision = await resolve_dispute(dispute)
+        # Se resolve_dispute for síncrono, execute diretamente:
+        decision = resolve_dispute(dispute)
         return decision
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
