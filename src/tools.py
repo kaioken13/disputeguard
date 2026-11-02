@@ -55,10 +55,8 @@ chroma_client = chromadb.Client()
 emb_fn = embedding_functions.DefaultEmbeddingFunction()
 # Na inicialização da collection (linha 50):
 # Use cast(Any, ...) ou type: ignore[arg-type] para neutralizar o stub imperfeito do ChromaDB:
-policy_collection = chroma_client.get_or_create_collection(
-    name="policies",
-    policy_collection = chroma_client.get_or_create_collection(name="policies"),
-)
+policy_collection = chroma_client.get_or_create_collection(name="policies")
+
 
 # Na função search_policy (linha 70):
 # Valide se documents existe e não é None antes de indexar:
