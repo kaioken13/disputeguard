@@ -4,8 +4,8 @@ import time
 from litellm import acompletion
 from pydantic import BaseModel
 
-from app.agent import DisputeAgent
-from app.schemas import ActionType, DisputeDecision, DisputeRequest
+from src.agent import DisputeAgent
+from src.schemas import ActionType, DisputeDecision, DisputeRequest
 
 
 class TestCase(BaseModel):

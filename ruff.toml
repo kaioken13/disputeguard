@@ -16,7 +16,7 @@ ignore = [
 ]
 
 [lint.isort]
-# Trava o módulo 'app' como pacote local (first-party)
-known-first-party = ["app"]
+# Trava o módulo 'src' como pacote local (first-party)
+known-first-party = ["src"]
 combine-as-imports = true
 lines-after-imports = 2

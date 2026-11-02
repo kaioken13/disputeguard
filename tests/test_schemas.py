@@ -1,4 +1,4 @@
-from app.schemas import ActionType, DisputeDecision, DisputeRequest
+from src.schemas import ActionType, DisputeDecision, DisputeRequest
 
 
 def test_dispute_request_schema_valid() -> None:

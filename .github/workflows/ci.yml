@@ -25,10 +25,10 @@ jobs:
           pip install ruff mypy pytest pytest-asyncio
 
       - name: Lint and Format Check (Ruff)
-        run: ruff check app/ tests/
+        run: ruff check src/ tests/
 
       - name: Static Type Check (Mypy)
-        run: mypy app/ --ignore-missing-imports
+        run: mypy src/ --ignore-missing-imports
 
       - name: Run Unit & Integration Tests
         env:
