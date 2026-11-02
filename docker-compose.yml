@@ -1,0 +1,21 @@
+version: "3.8"
+
+services:
+  dispute-guard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: disputeguard-api
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CHROMA_PERSIST_DIRECTORY=/app/data/chroma
+      - LOG_LEVEL=INFO
+    volumes:
+      - chroma_data:/app/data/chroma
+    restart: unless-stopped
+
+volumes:
+  chroma_data:
+    driver: local
