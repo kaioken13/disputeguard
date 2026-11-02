@@ -1,0 +1,22 @@
+target-version = "py311"
+line-length = 88
+
+[lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort (ordenação de imports)
+    "UP",   # pyupgrade (uso de sintaxe moderna do python 3.11)
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+]
+ignore = [
+    "E501",  # ignora tamanho de linha no linter (delega para o formatador)
+]
+
+[lint.isort]
+# Trava o módulo 'app' como pacote local (first-party)
+known-first-party = ["app"]
+combine-as-imports = true
+lines-after-imports = 2
