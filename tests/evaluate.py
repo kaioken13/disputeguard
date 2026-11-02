@@ -1,11 +1,10 @@
 import asyncio
 import time
 
-from litellm import acompletion
-from pydantic import BaseModel
-
 from app.agent import DisputeAgent
 from app.schemas import ActionType, DisputeDecision, DisputeRequest
+from litellm import acompletion
+from pydantic import BaseModel
 
 
 class TestCase(BaseModel):
