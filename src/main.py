@@ -18,3 +18,7 @@ async def handle_dispute(dispute: CustomerDisputeInput) -> DisputeResolution:
         return decision
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+@app.get("/health", status_code=200)
+def health_check() -> dict[str, str]:
+  return {"status": "healthy"}

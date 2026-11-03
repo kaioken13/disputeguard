@@ -1,5 +1,6 @@
 import asyncio
 import time
+from typing import NamedTuple
 
 from litellm import acompletion
 from pydantic import BaseModel
@@ -16,7 +17,17 @@ class TestCase(BaseModel):
     expected_reasoning_keyword: str
 
 
-# 1. Dataset de Benchmark Sintético com Casos de Borda Reais de Delivery
+class EvaluationResult(NamedTuple):
+    test_id: str
+    passed: bool
+    latency_ms: float
+    action_match: bool
+    reasoning_valid: bool
+    obtained_action: str
+    expected_action: str
+    reasoning: str
+
+
 BENCHMARK_DATASET: list[TestCase] = [
     TestCase(
         id="TC-01",
@@ -66,7 +77,6 @@ BENCHMARK_DATASET: list[TestCase] = [
 ]
 
 
-# 2. Avaliador LLM-as-a-Judge
 async def judge_reasoning_quality(agent_reasoning: str, expected_keyword: str) -> bool:
     prompt = f"""
     Atue como um auditor rigoroso de suporte e compliance para delivery.
@@ -86,65 +96,74 @@ async def judge_reasoning_quality(agent_reasoning: str, expected_keyword: str) -
         )
         content = response.choices[0].message.content or ""
         return "TRUE" in content.strip().upper()
-    except (RuntimeError, ValueError, KeyError):
-        # Fallback determinístico caso a API do judge oscile
+    except Exception:
+        # Fallback semântico determinístico
         return expected_keyword.lower() in agent_reasoning.lower()
 
 
-# 3. Pipeline de Execução de Benchmark
-async def run_benchmark() -> None:
-    agent = DisputeAgent()
-    results: list[bool] = []
-    latencies: list[float] = []
-
-    print("=" * 60)
-    print("INICIANDO BENCHMARK DE PRODUÇÃO: DISPUTEGUARD (LLM-AS-A-JUDGE)")
-    print("=" * 60)
-
-    for test in BENCHMARK_DATASET:
+async def evaluate_single_case(
+    test: TestCase, agent: DisputeAgent, semaphore: asyncio.Semaphore
+) -> EvaluationResult:
+    async with semaphore:
         start_time = time.perf_counter()
-
-        # Execução do agente
         decision: DisputeDecision = await agent.evaluate_dispute(test.request)
+        latency_ms = (time.perf_counter() - start_time) * 1000
 
-        latency = (time.perf_counter() - start_time) * 1000
-        latencies.append(latency)
-
-        # Validação de Acurácia de Decisão
         action_match = decision.action == test.expected_action
-
-        # Avaliação semântica via LLM-as-a-judge
         reasoning_valid = await judge_reasoning_quality(
-            decision.reasoning,
-            test.expected_reasoning_keyword,
+            decision.reasoning, test.expected_reasoning_keyword
         )
 
         passed = action_match and reasoning_valid
-        results.append(passed)
 
-        status = "PASS" if passed else "FAIL"
-        print(f"[{status}] {test.id}: {test.description}")
-        print(
-            f"       Latência: {latency:.2f}ms | Ação Esperada: {test.expected_action.value} | Ação Obtida: {decision.action.value}"
+        return EvaluationResult(
+            test_id=test.id,
+            passed=passed,
+            latency_ms=latency_ms,
+            action_match=action_match,
+            reasoning_valid=reasoning_valid,
+            obtained_action=decision.action.value,
+            expected_action=test.expected_action.value,
+            reasoning=decision.reasoning,
         )
-        if not passed:
-            print(f"       Justificativa: {decision.reasoning}")
 
-    # 4. Cálculo de Métricas Finais
-    total_tests = len(BENCHMARK_DATASET)
-    passed_tests = sum(results)
+
+async def run_benchmark() -> None:
+    agent = DisputeAgent()
+    semaphore = asyncio.Semaphore(5)  # Limita concorrência para evitar rate limits
+
+    print("=" * 70)
+    print("INICIANDO BENCHMARK CONCORRENTE: DISPUTEGUARD (LLM-AS-A-JUDGE)")
+    print("=" * 70)
+
+    start_benchmark = time.perf_counter()
+    tasks = [evaluate_single_case(test, agent, semaphore) for test in BENCHMARK_DATASET]
+    results: list[EvaluationResult] = await asyncio.gather(*tasks)
+    total_time_ms = (time.perf_counter() - start_benchmark) * 1000
+
+    for r in results:
+        status = "PASS" if r.passed else "FAIL"
+        print(f"[{status}] {r.test_id} | Latência: {r.latency_ms:.2f}ms")
+        print(f"       Ação Esperada: {r.expected_action} | Obtida: {r.obtained_action}")
+        if not r.passed:
+            print(f"       Justificativa: {r.reasoning}")
+
+    total_tests = len(results)
+    passed_tests = sum(1 for r in results if r.passed)
     accuracy = (passed_tests / total_tests) * 100
+    latencies = sorted([r.latency_ms for r in results])
     avg_latency = sum(latencies) / len(latencies)
-    latencies.sort()
-    p95_latency = latencies[int(len(latencies) * 0.95)]
+    p95_index = min(int(len(latencies) * 0.95), len(latencies) - 1)
+    p95_latency = latencies[p95_index]
 
-    print("\n" + "-" * 60)
+    print("\n" + "-" * 70)
     print("RELATÓRIO CONSOLIDADO DE PERFORMANCE E GOVERNANÇA")
-    print("-" * 60)
-    print(f"Acurácia Global de Decisão: {accuracy:.1f}% ({passed_tests}/{total_tests})")
-    print(f"Latência Média:             {avg_latency:.2f} ms")
-    print(f"Latência P95:               {p95_latency:.2f} ms")
-    print("=" * 60)
+    print("-" * 70)
+    print(f"Acurácia Global:      {accuracy:.1f}% ({passed_tests}/{total_tests})")
+    print(f"Tempo Total do Batch: {total_time_ms:.2f} ms")
+    print(f"Latência Média:       {avg_latency:.2f} ms")
+    print(f"Latência P95:         {p95_latency:.2f} ms")
+    print("=" * 70)
 
 
 if __name__ == "__main__":
