@@ -1,51 +1,53 @@
 import json
-
+import re
 from litellm import completion
-
 from src.schemas import CustomerDisputeInput, DisputeResolution
-from src.tools import get_order_details, search_policy
 
+SYSTEM_PROMPT = """You are an autonomous AI dispute agent. You must respond ONLY with a valid JSON object.
+Do not write explanations outside the JSON.
 
-SYSTEM_PROMPT = """Você é o motor de decisão autônomo do iFood para disputas de pedidos (DisputeGuard).
-Sua missão é resolver o problema do cliente de forma justa, aderente às políticas internas e sem alucinar.
+Required schema:
+{
+  "decision": "REFUND" | "VOUCHER" | "REQUEST_INFO" | "ESCALATE",
+  "refund_amount": 0.0,
+  "voucher_amount": 0.0,
+  "customer_response": "Empathetic and professional response to the customer",
+  "internal_reasoning": "Technical justification explaining delay, audit, history, or tolerance",
+  "confidence_score": 0.95
+}
 
-Passos obrigatórios:
-1. Analise o relato do cliente.
-2. Examine os dados reais do pedido (itens, atraso na entrega, histórico de disputas).
-3. Avalie as políticas de cancelamento e reembolso recuperadas.
-4. Responda ESTRITAMENTE em formato JSON compatível com o schema especificado.
+Decision Rules:
+- ESCALATE: Missing entire order, suspected fraud, repeat disputes, or requiring human audit.
+- REFUND: Severe delay (>45m), cancelled by restaurant, or confirmed non-delivery.
+- VOUCHER: Single missing secondary item (e.g., drink) or minor spill.
+- REQUEST_INFO: Negligible delay (<5m within tolerance) or vague complaint lacking details.
 """
 
-
-def resolve_dispute(
-    dispute: CustomerDisputeInput, model: str = "groq/llama-3.1-70b-versatile"
-) -> DisputeResolution:
-    # 1. Recupera contexto de infra e políticas
-    order_data = get_order_details(dispute.order_id)
-    relevant_rules = search_policy(dispute.dispute_text)
-
-    prompt = f"""
-    DADOS DO PEDIDO:
-    {json.dumps(order_data, indent=2, ensure_ascii=False)}
-
-    POLÍTICAS APLICÁVEIS:
-    {json.dumps(relevant_rules, indent=2, ensure_ascii=False)}
-
-    RELATO DO CLIENTE:
-    "{dispute.dispute_text}"
-
-    Gere a decisão final estruturada:
-    """
+def resolve_dispute(input_data: CustomerDisputeInput) -> DisputeResolution:
+    model = "groq/qwen/qwen3.8-27b"
+    
+    user_message = (
+        f"Order ID: {input_data.order_id}\n"
+        f"Customer ID: {input_data.customer_id}\n"
+        f"Dispute: {input_data.dispute_text}\n\n"
+        "Generate the dispute resolution JSON:"
+    )
 
     response = completion(
         model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
+            {"role": "user", "content": user_message}
         ],
-        response_format={"type": "json_object"},
-        temperature=0.1,
+        temperature=0.0,
+        response_format={"type": "json_object"}
     )
 
-    raw_json = response.choices[0].message.content
-    return DisputeResolution.model_validate_json(raw_json)
+    raw_content = response.choices[0].message.content.strip()
+    
+    # Extrai o bloco JSON caso haja formatação markdown residual
+    json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+    if json_match:
+        raw_content = json_match.group(0)
+
+    return DisputeResolution.model_validate_json(raw_content)
