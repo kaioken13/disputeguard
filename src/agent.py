@@ -1,7 +1,9 @@
-import json
 import re
+
 from litellm import completion
+
 from src.schemas import CustomerDisputeInput, DisputeResolution
+
 
 SYSTEM_PROMPT = """You are an autonomous AI dispute agent. You must respond ONLY with a valid JSON object.
 Do not write explanations outside the JSON.
@@ -23,9 +25,10 @@ Decision Rules:
 - REQUEST_INFO: Negligible delay (<5m within tolerance) or vague complaint lacking details.
 """
 
+
 def resolve_dispute(input_data: CustomerDisputeInput) -> DisputeResolution:
     model = "groq/qwen/qwen3.8-27b"
-    
+
     user_message = (
         f"Order ID: {input_data.order_id}\n"
         f"Customer ID: {input_data.customer_id}\n"
@@ -37,16 +40,15 @@ def resolve_dispute(input_data: CustomerDisputeInput) -> DisputeResolution:
         model=model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_message}
+            {"role": "user", "content": user_message},
         ],
         temperature=0.0,
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
     )
 
     raw_content = response.choices[0].message.content.strip()
-    
-    # Extrai o bloco JSON caso haja formatação markdown residual
-    json_match = re.search(r'\{.*\}', raw_content, re.DOTALL)
+
+    json_match = re.search(r"\{.*\}", raw_content, re.DOTALL)
     if json_match:
         raw_content = json_match.group(0)
 
