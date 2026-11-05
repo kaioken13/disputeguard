@@ -1,6 +1,8 @@
 from fastapi import FastAPI
-from src.schemas import CustomerDisputeInput, DisputeResolution
+
 from src.agent import resolve_dispute
+from src.schemas import CustomerDisputeInput, DisputeResolution
+
 
 app = FastAPI(title="DisputeGuard", version="1.0.0")
 
