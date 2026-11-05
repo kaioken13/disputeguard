@@ -1,24 +1,13 @@
-from fastapi import FastAPI, HTTPException
-
-from src.agent import resolve_dispute
+from fastapi import FastAPI
 from src.schemas import CustomerDisputeInput, DisputeResolution
+from src.agent import resolve_dispute
 
+app = FastAPI(title="DisputeGuard", version="1.0.0")
 
-app = FastAPI(
-    title="DisputeGuard API",
-    description="Motor autônomo de resolução de disputas do iFood",
-)
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
-
-@app.post("/disputes/resolve", response_model=DisputeResolution)
-async def handle_dispute(dispute: CustomerDisputeInput) -> DisputeResolution:
-    try:
-        # Se resolve_dispute for síncrono, execute diretamente:
-        decision = resolve_dispute(dispute)
-        return decision
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-@app.get("/health", status_code=200)
-def health_check() -> dict[str, str]:
-  return {"status": "healthy"}
+@app.post("/v1/disputes/resolve", response_model=DisputeResolution)
+def handle_dispute(payload: CustomerDisputeInput):
+    return resolve_dispute(payload)
