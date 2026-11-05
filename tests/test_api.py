@@ -28,7 +28,7 @@ def test_resolve_dispute_endpoint_success() -> None:
             "dispute_text": "O entregador demorou mais de 70 minutos e a comida chegou totalmente fria.",
         }
 
-        response = client.post("/disputes/resolve", json=payload)
+        response = client.post("/v1/disputes/resolve", json=payload)
 
         assert response.status_code == 200
         data = response.json()
