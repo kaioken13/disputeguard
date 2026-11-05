@@ -6,7 +6,7 @@ from litellm import acompletion
 from pydantic import BaseModel
 
 from src.agent import resolve_dispute
-from src.schemas import CustomerDisputeInput, DisputeResolution
+from src.schemas import CustomerDisputeInput
 
 
 class TestCase(BaseModel):
@@ -104,7 +104,13 @@ BENCHMARK_DATASET: list[TestCase] = [
             dispute_text="No aplicativo consta como entregue, mas não há ninguém na minha portaria e não recebi.",
         ),
         expected_decision="ESCALATE",
-        expected_reasoning_keywords=["entrega", "audit", "fraud", "mismatch", "delivered"],
+        expected_reasoning_keywords=[
+            "entrega",
+            "audit",
+            "fraud",
+            "mismatch",
+            "delivered",
+        ],
     ),
     TestCase(
         id="TC-08",
@@ -115,7 +121,13 @@ BENCHMARK_DATASET: list[TestCase] = [
             dispute_text="Veio um prato completamente diferente do que pedi e a embalagem estava rasgada.",
         ),
         expected_decision="ESCALATE",
-        expected_reasoning_keywords=["errado", "different", "audit", "severe", "mix-up"],
+        expected_reasoning_keywords=[
+            "errado",
+            "different",
+            "audit",
+            "severe",
+            "mix-up",
+        ],
     ),
     TestCase(
         id="TC-09",
@@ -182,13 +194,17 @@ async def evaluate_single_case(
                 err_msg = str(e).lower()
                 if "429" in err_msg or "rate_limit" in err_msg:
                     wait_time = 4.0 * (attempt + 1)
-                    print(f"  [Rate Limit] Aguardando {wait_time}s para retentar {test.id}...")
+                    print(
+                        f"  [Rate Limit] Aguardando {wait_time}s para retentar {test.id}..."
+                    )
                     await asyncio.sleep(wait_time)
                 else:
                     raise e
 
         if resolution is None:
-            raise RuntimeError(f"Falha por Rate Limit após {max_retries} tentativas em {test.id}")
+            raise RuntimeError(
+                f"Falha por Rate Limit após {max_retries} tentativas em {test.id}"
+            )
 
         latency_ms = (time.perf_counter() - start_time) * 1000
 
@@ -226,7 +242,9 @@ async def run_benchmark() -> None:
     for r in results:
         status = "PASS" if r.passed else "FAIL"
         print(f"[{status}] {r.test_id} | Latência: {r.latency_ms:.2f}ms")
-        print(f"       Decisão Esperada: {r.expected_decision} | Obtida: {r.obtained_decision}")
+        print(
+            f"       Decisão Esperada: {r.expected_decision} | Obtida: {r.obtained_decision}"
+        )
         if not r.passed:
             print(f"       Justificativa Interna: {r.internal_reasoning}")
 
