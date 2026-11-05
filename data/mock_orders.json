@@ -1,0 +1,39 @@
+[
+  {
+    "order_id": "ORD-E2E-COMPOSE-01",
+    "customer_id": "CUST-BR-123",
+    "order_status": "DELIVERED",
+    "ordered_at": "2026-11-05T19:00:00Z",
+    "estimated_delivery_at": "2026-11-05T19:40:00Z",
+    "actual_delivery_at": "2026-11-05T21:00:00Z",
+    "delay_minutes": 80,
+    "order_amount_brl": 89.90,
+    "courier_status": "TRAFFIC_INCIDENT_REPORTED",
+    "items": ["Hambúrguer Artesanal", "Batata Frita", "Refrigerante"]
+  },
+  {
+    "order_id": "ORD-FAST-02",
+    "customer_id": "CUST-BR-456",
+    "order_status": "DELIVERED",
+    "ordered_at": "2026-11-05T20:10:00Z",
+    "estimated_delivery_at": "2026-11-05T20:45:00Z",
+    "actual_delivery_at": "2026-11-05T20:38:00Z",
+    "delay_minutes": 0,
+    "order_amount_brl": 45.00,
+    "courier_status": "ON_TIME",
+    "items": ["Pizza Média Calabresa"]
+  },
+  {
+    "order_id": "ORD-FRAUD-ALERT-03",
+    "customer_id": "CUST-SUSPICIOUS-99",
+    "order_status": "DELIVERED",
+    "ordered_at": "2026-11-04T13:00:00Z",
+    "estimated_delivery_at": "2026-11-04T13:30:00Z",
+    "actual_delivery_at": "2026-11-04T13:28:00Z",
+    "delay_minutes": 0,
+    "order_amount_brl": 320.50,
+    "courier_status": "PHOTO_CONFIRMATION_SUBMITTED",
+    "customer_refund_history_count": 5,
+    "items": ["Sushi Combo Premium 60 peças"]
+  }
+]
