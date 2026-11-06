@@ -16,8 +16,10 @@ services:
       - LOG_LEVEL=INFO
     volumes:
       - chroma_data:/app/data/chroma
+    networks:
+      - ml-infra-net
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 10s
       timeout: 5s
       retries: 3
@@ -27,3 +29,7 @@ services:
 volumes:
   chroma_data:
     driver: local
+
+networks:
+  ml-infra-net:
+    external: true

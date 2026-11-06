@@ -1,12 +1,16 @@
 import json
+
 import litellm
+
 from src.config import settings
 from src.services.order_service import load_order_details
 
 
-async def resolve_dispute_pipeline(order_id: str, customer_id: str, dispute_text: str, vector_context: str) -> dict:
+async def resolve_dispute_pipeline(
+    order_id: str, customer_id: str, dispute_text: str, vector_context: str
+) -> dict:
     order_data = load_order_details(order_id)
-    
+
     if order_data:
         order_summary = (
             f"- Status do Pedido: {order_data.get('order_status')}\n"
@@ -16,7 +20,9 @@ async def resolve_dispute_pipeline(order_id: str, customer_id: str, dispute_text
             f"- Valor Total: R$ {order_data.get('order_amount_brl')}"
         )
     else:
-        order_summary = "Dados transacionais do pedido não localizados na base operacional."
+        order_summary = (
+            "Dados transacionais do pedido não localizados na base operacional."
+        )
 
     prompt = f"""
 Você é o motor de governança e resolução de disputas DisputeGuard.
@@ -47,7 +53,7 @@ Responda EXCLUSIVAMENTE em formato JSON com as chaves:
         api_key=settings.GROQ_API_KEY,
         messages=[{"role": "user", "content": prompt}],
         response_format={"type": "json_object"},
-        temperature=0.1
+        temperature=0.1,
     )
 
     return json.loads(response.choices[0].message.content)

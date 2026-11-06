@@ -1,5 +1,5 @@
 from functools import lru_cache
-from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -10,8 +10,10 @@ class Settings(BaseSettings):
     PORT: int = Field(default=8000, validation_alias="PORT")
 
     # LLM / Groq
-    GROQ_API_KEY: str = Field(..., validation_alias="GROQ_API_KEY")
-    LLM_MODEL: str = Field(default="groq/llama-3.3-70b-versatile", validation_alias="LLM_MODEL")
+    GROQ_API_KEY: str = Field(default="", validation_alias="GROQ_API_KEY")
+    LLM_MODEL: str = Field(
+        default="groq/openai/gpt-oss-20b", validation_alias="LLM_MODEL"
+    )
 
     # ChromaDB / RAG
     CHROMA_PERSIST_DIRECTORY: str = Field(

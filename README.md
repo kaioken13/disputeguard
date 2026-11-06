@@ -9,7 +9,7 @@ An LLM-based service that resolves customer disputes for delivery and e-commerce
 [![Groq](https://img.shields.io/badge/Inference-Groq-f55036)](https://groq.com/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-<!-- TODO: confirm the repository path in the CI badge. A real Actions badge replaces the static "Passing" one, which never changes. -->
+**Contents:** [Overview](#overview) · [Architecture](#architecture) · [How it works](#how-it-works) · [API](#api) · [Running behind inferrust-proxy](#running-behind-inferrust-proxy) · [Evaluation](#evaluation) · [Limitations](#limitations) · [Quickstart](#quickstart)
 
 ## Overview
 
@@ -22,63 +22,104 @@ Scope, stated plainly:
 - One LLM call per dispute. There are no tools or multi-step loops.
 - The decision set is `REFUND`, `VOUCHER`, `REQUEST_INFO`, `ESCALATE`. There is no outright denial.
 - The evaluation suite runs offline with `make eval`. It is not part of the request path.
+- The service runs on its own on port `8000`, or behind [inferrust-proxy](https://github.com/kaioken13/inferrust-proxy) on port `3000`, which adds Redis caching and idempotency.
 
 ## Architecture
 
 ```mermaid
 flowchart TD
-    subgraph Request path
-        A[Dispute payload] --> B[Pydantic v2: CustomerDisputeInput]
-        B --> C{Valid?}
-        C -- No --> D[HTTP 422]
-        C -- Yes --> E[Input sanitizer]
-        E --> F[LiteLLM]
-        F --> G[Groq: qwen/qwen3.8-27b]
-        G --> H[Raw JSON]
-        H --> I[Pydantic v2: DisputeResolution]
+    subgraph req [Request path]
+        A["Dispute payload"] --> B["Pydantic v2: CustomerDisputeInput"]
+        B --> C{"Valid?"}
+        C -- No --> D["HTTP 422"]
+        C -- Yes --> E["Input sanitizer"]
+        E --> F["LiteLLM"]
+        F --> G["Groq: qwen/qwen3.8-27b"]
+        G --> H["Raw JSON"]
+        H --> I["Pydantic v2: DisputeResolution"]
     end
 
-    subgraph Offline evaluation: make eval
-        T[10 test cases] --> F
-        I --> J[Decision matches expected?]
-        I --> K[Lexical filter on the reasoning]
-        K -- Ambiguous --> L[LLM judge]
+    subgraph ev [Offline evaluation, make eval]
+        T["10 test cases"] --> F
+        I --> J["Decision matches expected?"]
+        I --> K["Lexical filter on the reasoning"]
+        K -- Ambiguous --> L["LLM judge"]
     end
 ```
-
-<!-- TODO: confirm that the audit (lexical filter + judge) only runs in evaluate.py and not in the request path. -->
 
 ## How it works
 
 - **Typed output.** The model is asked for JSON and the result is parsed with `DisputeResolution.model_validate_json()`. A response that does not fit the schema raises an error instead of reaching the caller.
 - **Provider setup through LiteLLM.** The model is a configuration string (`qwen/qwen3.8-27b` on Groq today). Changing providers means changing that string and the API key.
 - **Concurrency limit and retries.** An `asyncio.Semaphore` caps concurrent calls, and failed calls are retried with exponential backoff to stay within the provider's tokens-per-minute and requests-per-minute limits.
-- **Input sanitization.** Incoming text is cleaned before it reaches the prompt. This lowers risk but does not eliminate prompt injection (see Limitations).
+- **Input sanitization.** Incoming text is cleaned before it reaches the prompt. This lowers risk but does not eliminate prompt injection (see [Limitations](#limitations)).
 
 ## API
-
-<!-- TODO: confirm main.py (FastAPI) is in the repository, then keep this section and add it to the project structure. -->
 
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/health` | Liveness check. Returns `{"status": "healthy", "service": "disputeguard"}`. |
 | `POST` | `/api/v1/dispute/resolve` | Body: `CustomerDisputeInput`. Returns a `DisputeResolution`. |
 
-Invalid bodies return `422`. Unexpected errors return `500`. Interactive docs are served at `/docs`.
+Invalid bodies return `422`. Unexpected errors return `500`. Interactive docs are served at `/docs`, and the full request and response schemas are defined in `src/schemas.py`.
 
 Run locally:
 
 ```bash
-uvicorn main:app --reload
+uvicorn main:app --reload --port 8000
 ```
+
+## Running behind inferrust-proxy
+
+DisputeGuard has two entry points:
+
+| Port | Request path | What you get |
+| --- | --- | --- |
+| `8000` | Client -> DisputeGuard | The API directly, with no cache. Every request calls the LLM. |
+| `3000` | Client -> inferrust-proxy -> DisputeGuard | The same API behind the proxy, with Redis caching and idempotency. |
+
+```mermaid
+flowchart LR
+    C1["Client"] -- "port 8000, direct" --> G["DisputeGuard API"]
+    C2["Client"] -- "port 3000" --> P["inferrust-proxy"]
+    P <--> R[("Redis: cache and idempotency")]
+    P -- "cache miss" --> G
+    G --> L["LiteLLM to Groq"]
+```
+
+The same request through each entry point:
+
+```bash
+# Direct: always runs the agent
+curl -X POST http://127.0.0.1:8000/api/v1/dispute/resolve \
+  -H "Content-Type: application/json" \
+  -d @dispute.json
+
+# Through the proxy: cached and idempotent
+curl -X POST http://127.0.0.1:3000/api/v1/dispute/resolve \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: 6f1c2a0e-7a54-4c58-9f2e-1d3b0e5a9c11" \
+  -d @dispute.json
+```
+
+Setup of the proxy itself (Redis, backend address, ports) is described in the [inferrust-proxy README](https://github.com/kaioken13/inferrust-proxy).
+
+### Why put a proxy in front
+
+- **Retries are safe.** A client that retries after a timeout, or a user who sends the same dispute twice, gets the first decision back instead of triggering a second LLM call. For a service that recommends refunds, a duplicate decision is a real cost.
+- **Consistent answers.** An LLM can answer the same input differently across runs. Serving a stored decision for a repeated request keeps the answer stable while the entry lives.
+- **Lower cost and latency on repeats.** A cache hit skips the LLM call.
+
+### What to keep in mind
+
+- A cached decision does not change when you edit the prompt or the policy. It lasts until the entry expires or the cache is flushed.
+- Idempotency keys should be generated by the client, one per dispute, not per retry.
 
 ## Evaluation
 
 ### Method
 
 `evaluate.py` runs 10 hand-written disputes concurrently and compares each decision with the expected one. The reasoning text returned by the model is then audited in two tiers: a bilingual (Portuguese and English) regex filter, and an LLM judge for the cases the filter cannot settle.
-
-<!-- TODO: state which model acts as judge and what it scores (for example, whether the reasoning is consistent with the decision and the policy). If the judge is the same model as the agent, say so. -->
 
 ### Results (single run)
 
@@ -106,7 +147,7 @@ All 10 decisions matched the expected ones, and all 10 responses parsed into `Di
 | Latency, mean | ~2.5 s |
 | Latency, min / max | 0.64 s / 5.04 s |
 
-Latency figures are computed from the per-case values above. Cases run concurrently under the concurrency limit, so a latency can include waiting and retry backoff, not only model time.
+Latency figures are computed from the per-case values above. Cases run concurrently under the concurrency limit, so a latency can include waiting and retry backoff, not only model time. These runs call the API directly (port `8000`).
 
 <details>
 <summary>Raw per-case output</summary>
@@ -138,6 +179,7 @@ Latency figures are computed from the per-case values above. Cases run concurren
 - **No denial outcome.** A claim that should be rejected ends up as `REQUEST_INFO` or `ESCALATE`.
 - **No human review loop, authentication or audit trail** in the service itself.
 - **No monetary limits or business rules outside the prompt.** The policy lives in the prompt and is not enforced by code.
+- **Stale decisions behind the proxy.** Cached decisions survive prompt and policy changes until they expire or are flushed.
 - **Evaluation scope.** Small, synthetic, single-run and self-authored (see above).
 
 ## Tech stack
@@ -145,14 +187,14 @@ Latency figures are computed from the per-case values above. Cases run concurren
 | Area | Tool |
 | --- | --- |
 | Runtime | Python 3.11+ |
+| API | FastAPI, Uvicorn |
 | Validation | [Pydantic v2](https://github.com/pydantic/pydantic) |
 | LLM gateway | [LiteLLM](https://github.com/BerriAI/litellm) |
 | Inference | [Groq](https://groq.com) (`qwen/qwen3.8-27b`) |
+| Cache and idempotency | Redis through [inferrust-proxy](https://github.com/kaioken13/inferrust-proxy) |
 | Lint and format | [Ruff](https://github.com/astral-sh/ruff) |
 | Typing | [Mypy](https://github.com/python/mypy) (strict) |
 | Tests | [Pytest](https://docs.pytest.org/) |
-
-<!-- TODO: list the Python versions your CI matrix actually runs. Remove any version that CI does not test. -->
 
 ## Project structure
 
@@ -168,6 +210,7 @@ disputeguard/
 │   └── test_agent.py          # Offline tests with mocked LLM responses
 ├── .env.example
 ├── evaluate.py                # Concurrent evaluation suite
+├── main.py                    # FastAPI application
 ├── Makefile
 ├── pyproject.toml
 └── README.md
@@ -186,6 +229,9 @@ source .venv/bin/activate        # Windows: .venv\Scripts\activate
 uv pip install -e ".[dev]"
 
 cp .env.example .env             # then set GROQ_API_KEY in .env
+
+uvicorn main:app --reload --port 8000
+curl http://127.0.0.1:8000/health
 ```
 
 ## Development
@@ -203,7 +249,7 @@ CI runs lint, type checks and the mocked unit tests only. It does not call the m
 
 - No credentials are committed. API keys live in `.env`, which is git-ignored.
 - CI uses mocked responses, so builds never use a production key.
-- See Limitations for what input sanitization does and does not protect against.
+- See [Limitations](#limitations) for what input sanitization does and does not protect against.
 
 ## License
 
