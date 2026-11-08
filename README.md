@@ -173,7 +173,7 @@ CONSOLIDATED METRICS:
 # Through the proxy: Cache MISS on the first call, HIT on a repeat with the same key
 curl -i -X POST http://localhost:3000/v1/disputes/resolve \
   -H "Content-Type: application/json" \
-  -H "Idempotency-Key: ifood-claim-991" \
+  -H "Idempotency-Key: dispute-retry-uuid-991" \
   -d '{
     "order_id": "ORD-991",
     "customer_id": "CUST-10",
