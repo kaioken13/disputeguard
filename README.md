@@ -1,31 +1,26 @@
 # DisputeGuard 🛡️
 
-An LLM-based decision service that resolves customer order disputes for delivery and e-commerce platforms. Each dispute is validated via Pydantic v2, evaluated against structured operational policies using an LLM, forced into a typed decision (`REFUND`, `VOUCHER`, `REQUEST_INFO`, or `ESCALATE`), and verified by an offline evaluation suite.
+An asynchronous dispute-resolution decision service built with **Python**, **FastAPI** and **Pydantic v2**, driven by **LiteLLM**. It triages customer disputes for delivery platforms into `REFUND`, `VOUCHER`, `REQUEST_INFO` or `ESCALATE`, rejects any model output that does not match a typed schema, and ships with an offline evaluation suite.
 
-[![CI](https://github.com/kaioken13/disputeguard/actions/workflows/ci.yml/badge.svg)](https://github.com/kaioken13/disputeguard/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.11%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
-[![FastAPI](https://img.shields.io/badge/Framework-FastAPI-009688?logo=fastapi)](https://fastapi.tiangolo.com/)
-[![Pydantic v2](https://img.shields.io/badge/Validation-Pydantic%20v2-e92063)](https://docs.pydantic.dev/)
+[![FastAPI](https://img.shields.io/badge/Framework-FastAPI-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Pydantic v2](https://img.shields.io/badge/Validation-Pydantic%20v2-e92063?logo=pydantic&logoColor=white)](https://docs.pydantic.dev/)
 [![LiteLLM](https://img.shields.io/badge/LLM%20gateway-LiteLLM-black)](https://docs.litellm.ai/)
 [![Groq](https://img.shields.io/badge/Inference-Groq-f55036)](https://groq.com/)
-[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker)](Dockerfile)
+[![Docker](https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white)](Dockerfile)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**Contents:** [Overview](#overview) · [Architecture](#architecture) · [API Endpoints](#api-endpoints) · [Running behind inferrust-proxy](#running-behind-inferrust-proxy) · [Evaluation](#evaluation) · [Limitations](#limitations) · [Project Structure](#project-structure) · [Quickstart](#quickstart) · [Development](#development)
+**Contents:** [Core features](#core-features) · [Architecture](#architecture) · [Decision taxonomy](#decision-taxonomy) · [Quickstart](#quickstart) · [API reference](#api-reference) · [Evaluation](#evaluation) · [Integration with inferrust-proxy](#integration-with-inferrust-proxy) · [Limitations](#limitations)
 
 ---
 
-## Overview
+## Core features
 
-Delivery platforms receive recurring customer disputes: late arrivals, missing items, damaged food, or unreceived drop-offs. Most cases adhere to business policies, but high-risk or ambiguous claims require human review to prevent fraud.
-
-DisputeGuard takes a typed dispute request, queries a reasoning model configured with decision policies, and returns a strictly validated resolution schema. Any model output deviating from the defined schema is rejected at runtime.
-
-Scope, stated plainly:
-- **Single-shot inference:** One LLM call per dispute (no autonomous agentic loops or unbounded tool calls).
-- **Constrained outcomes:** Output domain restricted to `REFUND`, `VOUCHER`, `REQUEST_INFO`, and `ESCALATE`. There is no outright programmatic rejection.
-- **Offline evaluation:** Benchmarking suite executed independently via `make eval`.
-- **Deployment options:** Runs standalone on port `8000`, or as a protected downstream service behind [inferrust-proxy](https://github.com/kaioken13/inferrust-proxy) on port `3000` (which provides Redis-backed distributed idempotency and rate limiting).
+- **Typed output (Pydantic v2).** Responses must match a structured model (`decision`, `confidence_score`, `reasoning`). Output that does not match is rejected. Validation guarantees the *format* of the answer, not that the decision is correct.
+- **Policy in the prompt.** The system prompt carries explicit business rules, for example refunds for delivery delays above 45 minutes, vouchers for minor issues, and escalation for suspected fraud.
+- **Provider setup through LiteLLM.** The model is set with `MODEL_NAME`. Evaluation results exist only for Groq `llama-3.3-70b-versatile`; other providers are not evaluated.
+- **Retries on rate limits.** Calls are asynchronous. On HTTP 429 they are retried with incremental backoff (4 s, 8 s and 12 s in the evaluation run).
+- **Offline evaluation.** `make eval` runs 10 hand-written dispute scenarios against expected decisions.
 
 ---
 
@@ -33,268 +28,184 @@ Scope, stated plainly:
 
 ```mermaid
 flowchart TD
-    subgraph req [Request Path]
-        A["Dispute Payload"] --> B["Pydantic v2: DisputeRequest"]
-        B --> C{"Valid Contract?"}
-        C -- No --> D["HTTP 422 Unprocessable Entity"]
-        C -- Yes --> E["Input Sanitization & Policy Prompt"]
-        E --> F["LiteLLM Orchestrator"]
-        F --> G["Groq / Llama 3 Inference"]
-        G --> H["Raw JSON Completion"]
-        H --> I["Pydantic v2: DisputeResolution"]
+    Client["Client / inferrust-proxy"] -->|"POST /v1/disputes/resolve"| API["DisputeGuard FastAPI :8000"]
+
+    subgraph core ["DisputeGuard Core"]
+        Validator["Pydantic v2 request validator"]
+        PolicyEngine["Policy context injector"]
+        LLMDriver["LiteLLM interface"]
+        SchemaGuard["JSON schema output parser"]
     end
 
-    subgraph ev [Offline Evaluation: make eval]
-        T["10 Synthetic Test Cases"] --> F
-        I --> J["Decision Match Matrix"]
-        I --> K["Bilingual Lexical Filter on Reasoning"]
-        K -- Ambiguous --> L["LLM Judge Audit"]
-    end
+    API --> Validator
+    Validator --> PolicyEngine
+    PolicyEngine --> LLMDriver
+    LLMDriver -->|"Groq / Llama 3.3 70B"| RemoteEngine["Upstream inference API"]
+    RemoteEngine -->|"Raw response"| SchemaGuard
+    SchemaGuard -->|"Structured verdict"| API
+    API -->|"JSON decision"| Client
 ```
 
 ---
 
-## How it works
+## Decision taxonomy
 
-- **Typed Output:** The model is constrained to JSON, validated at runtime with Pydantic v2 (`DisputeResolution.model_validate_json()`). Invalid outputs raise validation errors rather than returning broken state.
-- **Provider Abstraction with LiteLLM:** Model orchestration is decoupled from the underlying provider. Switching from Groq to an internal inference cluster requires updating environment configuration without touching domain logic.
-- **Concurrency Control & Retries:** `asyncio.Semaphore` guards against upstream rate limits, handling transient provider backoff gracefully.
-- **Input Sanitization:** Customer-submitted text undergoes sanitization prior to template interpolation to mitigate injection risks.
+| Verdict | Trigger criteria |
+| :--- | :--- |
+| `REFUND` | Delivery delay above 45 min, wrong or missing items, or ruined orders. |
+| `VOUCHER` | Minor delivery delays (15 to 30 min), slight packaging defects, cold meals without damage. |
+| `REQUEST_INFO` | Insufficient description or ambiguous claims. |
+| `ESCALATE` | Suspected fraud or abuse, or safety issues. |
 
----
-
-## API Endpoints
-
-| Method | Path | Description |
-| :--- | :--- | :--- |
-| `GET` | `/health` | Liveness probe. Returns `{"status": "ok", "project": "disputeguard"}`. |
-| `POST` | `/v1/disputes/resolve` | Evaluates dispute text and returns a typed resolution decision. |
-
-Interactive OpenAPI documentation is served at `/docs`.
+The request carries only `order_id`, `customer_id` and `dispute_text`. Criteria are evaluated from the text of the claim: the service has no order history, photos or logistics data to verify it.
 
 ---
 
-## Running behind inferrust-proxy
+## Quickstart
 
-DisputeGuard provides two deployment topologies:
+### 1. Environment
 
-| Port | Request Flow | Operational Guarantees |
-| :---: | :--- | :--- |
-| **`8000`** | `Client -> DisputeGuard` | Direct API access. Every request triggers downstream LLM inference. |
-| **`3000`** | `Client -> inferrust-proxy -> DisputeGuard` | Edge gateway protection: Redis-backed distributed idempotency (`Idempotency-Key` header) and token-aware rate limiting. |
+Create a `.env` file in the project root:
 
-```mermaid
-flowchart LR
-    C1["Client (Direct)"] -- "Port 8000" --> G["DisputeGuard API"]
-    C2["Client (Edge)"] -- "Port 3000" --> P["inferrust-proxy (Rust)"]
-    P <--> R[("Redis: Idempotency & Rate Limit")]
-    P -- "Cache MISS" --> G
-    G --> L["LiteLLM / Groq API"]
-```
-
-### End-to-End Execution Example
-
-#### 1. Direct Call (Port 8000 - Always runs inference)
 ```bash
-curl -i -X POST http://localhost:8000/v1/disputes/resolve \
-  -H "Content-Type: application/json" \
-  -d '{
-    "order_id": "ORD-SMOKE-1",
-    "customer_id": "CUST-001",
-    "dispute_text": "Pedido atrasou mais de 1 hora e a embalagem veio rasgada.",
-    "order_amount": 55.00
-  }'
+GROQ_API_KEY="your-groq-api-key"
+MODEL_NAME="groq/llama-3.3-70b-versatile"
+ENVIRONMENT="production"
+PORT=8000
 ```
 
-#### 2. Via Edge Proxy (Port 3000 - Idempotent & Cached)
+### 2. Docker
+
 ```bash
-# First request: Cache MISS (~800ms)
-curl -i -X POST http://localhost:3000/v1/disputes/resolve \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: ifood-smoke-001" \
-  -d '{
-    "order_id": "ORD-SMOKE-1",
-    "customer_id": "CUST-001",
-    "dispute_text": "Pedido atrasou mais de 1 hora e a embalagem veio rasgada.",
-    "order_amount": 55.00
-  }'
-
-# Second request with identical key: Cache HIT (<4ms, served from Redis)
-curl -i -X POST http://localhost:3000/v1/disputes/resolve \
-  -H "Content-Type: application/json" \
-  -H "Idempotency-Key: ifood-smoke-001" \
-  -d '{
-    "order_id": "ORD-SMOKE-1",
-    "customer_id": "CUST-001",
-    "dispute_text": "Pedido atrasou mais de 1 hora e a embalagem veio rasgada.",
-    "order_amount": 55.00
-  }'
+docker build -t disputeguard-api .
+docker run -d --name disputeguard -p 8000:8000 --env-file .env disputeguard-api
 ```
 
-#### Actual JSON Response Payload (`200 OK`)
+### 3. Native Python
+
+```bash
+uv venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+uv pip install -e ".[dev]"
+
+uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Interactive docs are served at `http://localhost:8000/docs`.
+
+---
+
+## API reference
+
+### Resolve a dispute
+
+`POST /v1/disputes/resolve`
+
+Request:
+
 ```json
 {
-  "decision": "ESCALATE",
-  "confidence_score": 0.6,
-  "reasoning": "Não há dados transacionais disponíveis para confirmar o atraso superior a 45 minutos ou falha logística. Sem evidência comprovada, a política exige REFUND apenas quando o atraso é comprovado. Assim, a decisão mais prudente é escalar a reclamação para investigação adicional."
+  "order_id": "ORD-2024-8841",
+  "customer_id": "CUST-9921",
+  "dispute_text": "My meal arrived over 70 minutes late and was completely cold."
 }
 ```
 
-### Why Place a Proxy at the Edge?
-- **Safe Network Retries:** Mobile clients retrying on network drops receive the original decision without triggering duplicate LLM inferences or double refund calculations.
-- **Deterministic Outcomes:** LLM outputs can vary across identical calls. Storing the verified decision under the client's `Idempotency-Key` stabilizes the response for 24 hours.
-- **Cost & Latency Reduction:** Repeated claims or duplicate triggers are answered sub-5ms from Redis, skipping external GPU compute costs.
+Example response (`200 OK`):
+
+```json
+{
+  "decision": "REFUND",
+  "confidence_score": 0.85,
+  "reasoning": "Customer reported delivery delay exceeding 70 minutes, which surpasses the 45-minute platform SLA threshold for automatic full refunds. The complaint satisfies logistical breach criteria."
+}
+```
 
 ---
 
 ## Evaluation
 
 ### Method
-`evaluate.py` runs 10 synthetic real-world delivery dispute cases concurrently. Decisions are verified against baseline expectations, and returned reasoning text is audited using a two-tier filter: bilingual regex matching followed by an LLM-as-a-judge review on edge cases.
 
-### Results (Sample Run)
+`make eval` sends 10 hand-written dispute scenarios to the service and compares each decision with the expected one, using `groq/llama-3.3-70b-versatile`. The reasoning text is then audited in two tiers: a bilingual (Portuguese and English) regex filter, and an LLM judge for the cases the filter cannot settle.
 
-All 10 decisions matched expected outcomes, parsing strictly into `DisputeResolution`.
-
-| Case | Scenario | Decision | Latency (ms) | Policy Applied |
-| :---: | :--- | :---: | ---: | :--- |
-| **TC-01** | Severe delay (>60 min) without delivery | `REFUND` | 2,294 | Logistics threshold breach |
-| **TC-02** | Claim that the whole package never arrived | `ESCALATE` | 639 | Anti-fraud audit |
-| **TC-03** | Minor delay within tolerance (<5 min) | `REQUEST_INFO` | 763 | Under tolerance threshold |
-| **TC-04** | Single secondary item missing (e.g., drink) | `VOUCHER` | 963 | Partial remediation credit |
-| **TC-05** | Merchant stockout cancellation | `REFUND` | 1,334 | Merchant-side cancellation |
-| **TC-06** | Condiment spill or packaging leakage | `VOUCHER` | 2,585 | Quality goodwill credit |
-| **TC-07** | Marked delivered by GPS, customer denies | `ESCALATE` | 4,917 | Telemetry & driver log audit |
-| **TC-08** | Tampered seal / wrong order delivered | `ESCALATE` | 5,042 | Food safety inspection |
-| **TC-09** | Abusive claim history on customer profile | `ESCALATE` | 1,335 | Account supervisor review |
-| **TC-10** | Unsubstantiated complaint | `REQUEST_INFO` | 4,969 | Request additional evidence |
-
-| Metric | Measured Value |
-| :--- | :--- |
-| **Decision Accuracy** | 10 / 10 |
-| **Schema-Valid Outputs** | 10 / 10 |
-| **Erroneous Refunds on Escalation Cases** | 0 |
-| **Median Latency** | ~1.8 s |
-| **Mean Latency** | ~2.5 s |
-| **Latency Min / Max** | 0.64 s / 5.04 s |
-
-<details>
-<summary>Raw per-case evaluation output</summary>
+### Report
 
 ```text
-[PASS] TC-01 | Latência: 2294.04ms | Decisão Esperada: REFUND       | Obtida: REFUND
-[PASS] TC-02 | Latência:  638.89ms | Decisão Esperada: ESCALATE     | Obtida: ESCALATE
-[PASS] TC-03 | Latência:  762.92ms | Decisão Esperada: REQUEST_INFO | Obtida: REQUEST_INFO
-[PASS] TC-04 | Latência:  962.86ms | Decisão Esperada: VOUCHER      | Obtida: VOUCHER
-[PASS] TC-05 | Latência: 1334.17ms | Decisão Esperada: REFUND       | Obtida: REFUND
-[PASS] TC-06 | Latência: 2584.69ms | Decisão Esperada: VOUCHER      | Obtida: VOUCHER
-[PASS] TC-07 | Latência: 4917.39ms | Decisão Esperada: ESCALATE     | Obtida: ESCALATE
-[PASS] TC-08 | Latência: 5041.92ms | Decisão Esperada: ESCALATE     | Obtida: ESCALATE
-[PASS] TC-09 | Latência: 1334.80ms | Decisão Esperada: ESCALATE     | Obtida: ESCALATE
-[PASS] TC-10 | Latência: 4968.87ms | Decisão Esperada: REQUEST_INFO | Obtida: REQUEST_INFO
+======================================================================
+CONCURRENT BENCHMARK: DISPUTEGUARD (LLM-AS-A-JUDGE)
+======================================================================
+[PASS] TC-01 | Latency: 1602.95ms | Expected: REFUND       | Obtained: REFUND
+[PASS] TC-02 | Latency: 627.47ms  | Expected: ESCALATE     | Obtained: ESCALATE
+[PASS] TC-03 | Latency: 5259.37ms | Expected: REQUEST_INFO | Obtained: REQUEST_INFO
+[PASS] TC-04 | Latency: 12876.09ms| Expected: VOUCHER      | Obtained: VOUCHER
+[PASS] TC-05 | Latency: 12841.81ms| Expected: REFUND       | Obtained: REFUND
+[PASS] TC-06 | Latency: 658.09ms  | Expected: VOUCHER      | Obtained: VOUCHER
+[PASS] TC-07 | Latency: 25038.61ms| Expected: ESCALATE     | Obtained: ESCALATE
+[PASS] TC-08 | Latency: 4715.74ms | Expected: ESCALATE     | Obtained: ESCALATE
+[PASS] TC-09 | Latency: 4833.15ms | Expected: ESCALATE     | Obtained: ESCALATE
+[PASS] TC-10 | Latency: 4926.85ms | Expected: REQUEST_INFO | Obtained: REQUEST_INFO
+----------------------------------------------------------------------
+CONSOLIDATED METRICS:
+  Global Accuracy:       100.0% (10/10)
+  Nominal Latency:       627 ms - 1602 ms (Unthrottled)
+  Mean Batch Latency:    7338.01 ms
+  P95 Latency:           25038.61 ms (With backoff retries)
+  Total Batch Time:      73.38 s
+======================================================================
 ```
 
-</details>
+### How to read these results
+
+- The 10 cases and their expected decisions were written by the author, and the prompt was developed against them. 10/10 shows the service handles these scenarios, not that it will on real disputes. This is a single run.
+- Latencies include retries after HTTP 429. Three cases (TC-02, TC-06 and TC-01, between 627 and 1,603 ms) ran without hitting the provider's limit. TC-04, TC-05 and TC-07 were retried several times. The 4.7 to 5.3 s cases (TC-03, TC-08, TC-09, TC-10) are also consistent with one retry. The mean (7.3 s) therefore reflects the provider's rate limit as much as the service.
+- With 10 samples, the 95th percentile is the maximum value (25.04 s).
+- "Total Batch Time" (73.38 s) equals the sum of the 10 per-case latencies.
+- This benchmark calls the model provider directly. It did not go through `inferrust-proxy`.
+
+---
+
+## Integration with inferrust-proxy
+
+[inferrust-proxy](https://github.com/kaioken13/inferrust-proxy) can sit in front of DisputeGuard on port `3000`. The setup (clone both repositories side by side, export `GROQ_API_KEY`, start `docker-compose.integration.yml`) is described in the proxy README.
+
+```bash
+# Through the proxy: Cache MISS on the first call, HIT on a repeat with the same key
+curl -i -X POST http://localhost:3000/v1/disputes/resolve \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: ifood-claim-991" \
+  -d '{
+    "order_id": "ORD-991",
+    "customer_id": "CUST-10",
+    "dispute_text": "Item missing from the package."
+  }'
+```
+
+- **Cache MISS:** the request goes to DisputeGuard and the response is stored in Redis for 24 hours.
+- **Cache HIT:** the proxy answers from Redis in under 5 ms without calling DisputeGuard.
+
+**What the proxy helps with:** a client that retries with the same `Idempotency-Key` gets the stored decision instead of a second LLM call.
+
+**What it does not help with:** distinct disputes arriving in a burst still reach the model and can still hit the provider's rate limit. The proxy also matches only on the key, not on the request body (see the proxy's limitations).
 
 ---
 
 ## Limitations
 
-- **Prompt Injection:** Customer text is untrusted input. Regex sanitization lowers risk, but strict schema enforcement and escalation pathways remain the primary safeguards.
-- **No Direct Rejection:** Claims that fail policy requirements resolve to `REQUEST_INFO` or `ESCALATE` rather than outright programmatic rejection.
-- **Policy Storage:** Decision thresholds currently reside within the prompt template rather than an external dynamic rules engine.
-- **Evaluation Bounds:** 10 curated synthetic test cases validate core policy adherence, but real-world variance requires continuous evaluation over production distributions.
-
----
-
-## Project Structure
-
-```text
-disputeguard/
-├── .github/workflows/ci.yml   # Lint, type check, unit tests
-├── src/
-│   ├── __init__.py
-│   ├── config.py              # Application settings and environment loading
-│   ├── main.py                # FastAPI entrypoint (/health, /v1/disputes/resolve)
-│   ├── pipeline.py            # Orchestration flow, sanitization, LiteLLM bridge
-│   └── schemas.py             # DisputeRequest, DisputeResolution Pydantic schemas
-├── tests/
-│   ├── __init__.py
-│   └── test_pipeline.py       # Offline unit tests with mocked LLM responses
-├── .env.example
-├── evaluate.py                # Concurrent evaluation benchmark
-├── Dockerfile
-├── Makefile
-├── pyproject.toml
-└── README.md
-```
-
----
-
-## Quickstart
-
-### Prerequisites
-- Docker & Docker Compose (v2)
-- Groq API Key (`GROQ_API_KEY`)
-- Python 3.11+ and `uv` (for local development)
-
-### Option A: Integrated Stack via Docker Compose (Recommended)
-
-Orchestrates DisputeGuard alongside `inferrust-proxy` and Redis on `ml-infra-net`:
-
-```bash
-# From the inferrust-proxy sibling directory:
-cd ../inferrust-proxy
-docker compose -f docker-compose.integration.yml up --build -d
-```
-
-### Option B: Local Development (Bare Metal)
-
-```bash
-git clone https://github.com/kaioken13/disputeguard.git
-cd disputeguard
-
-# Virtual environment setup
-uv venv
-source .venv/bin/activate    # Windows: .venv\Scripts\activate
-uv pip install -e ".[dev]"
-
-# Configure environment
-cp .env.example .env
-# Set GROQ_API_KEY inside .env
-
-# Run FastAPI service
-uvicorn src.main:app --reload --port 8000
-```
-
-Verify service status:
-```bash
-curl http://localhost:8000/health
-```
-
----
-
-## Development
-
-```bash
-make lint     # Run Ruff linter
-make format   # Run Ruff formatting
-make test     # Offline unit tests with mocked LLM fixtures
-make eval     # Run concurrent evaluation against live model
-```
-
-CI runs linting, static type checking, and mocked unit tests on every pull request without requiring external API keys.
+- **Prompt injection.** Customer text is untrusted input to a model that influences refunds. Schema validation and the `ESCALATE` path are the main defenses.
+- **Claims cannot be verified.** The service decides from the customer's description. It has no access to order data, logistics logs or photos.
+- **No outright rejection.** A claim that should be denied ends up as `REQUEST_INFO` or `ESCALATE`.
+- **No human review loop** is included. The output is a policy recommendation, and refund authorization should stay with the downstream ledger.
+- **Small evaluation.** Ten author-written scenarios, one run, one model.
 
 ---
 
 ## 👨‍💻 Author
 
-**Thiago Aragão da Silva**  
-Data Science undergraduate at University of São Paulo (ICMC-USP)  
-Focus: Systems Engineering, MLOps & High-Performance AI Gateways  
+**Thiago Aragão da Silva**<br/>
+Data Science undergraduate at University of São Paulo (ICMC-USP)<br/>
+Focus: Systems Engineering, MLOps & High-Performance AI Gateways<br/>
 [GitHub](https://github.com/kaioken13) · [LinkedIn](https://www.linkedin.com/in/thiagoaragao147/)
-
----
 
 ## 📜 License
 
